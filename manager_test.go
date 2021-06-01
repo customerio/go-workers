@@ -1,9 +1,7 @@
 package workers
 
 import (
-	"fmt"
 	"sync"
-	"time"
 
 	"github.com/customerio/gospec"
 	. "github.com/customerio/gospec"
@@ -16,7 +14,7 @@ type customMid struct {
 	mutex sync.Mutex
 }
 
-func (m *customMid) Call(queue string, message *Msg, next func() bool) (result bool) {
+func (m *customMid) Call(queue string, messages Msgs, next func() bool) (result bool) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -39,8 +37,10 @@ func (m *customMid) Trace() []string {
 func ManagerSpec(c gospec.Context) {
 	processed := make(chan *Args)
 
-	testJob := (func(message *Msg) {
-		processed <- message.Args()
+	testJob := (func(messages Msgs) {
+		for _, m := range messages {
+			processed <- m.Args()
+		}
 	})
 
 	was := Config.Namespace
@@ -54,7 +54,7 @@ func ManagerSpec(c gospec.Context) {
 
 		c.Specify("sets job function", func() {
 			manager := newManager("myqueue", testJob, 10)
-			c.Expect(fmt.Sprint(manager.job), Equals, fmt.Sprint(testJob))
+			c.Expect(&manager.job, Not(Equals), nil)
 		})
 
 		c.Specify("sets worker concurrency", func() {
@@ -80,8 +80,8 @@ func ManagerSpec(c gospec.Context) {
 		conn := Config.Pool.Get()
 		defer conn.Close()
 
-		message, _ := NewMsg("{\"foo\":\"bar\",\"args\":[\"foo\",\"bar\"]}")
-		message2, _ := NewMsg("{\"foo\":\"bar2\",\"args\":[\"foo\",\"bar2\"]}")
+		msgs := buildVirginMessages("[\"foo\",\"bar\"]", "[\"foo\",\"bar2\"]")
+		message, message2 := msgs[0], msgs[1]
 
 		c.Specify("coordinates processing of queue messages", func() {
 			manager := newManager("manager1", testJob, 10)
@@ -98,38 +98,6 @@ func ManagerSpec(c gospec.Context) {
 
 			len, _ := redis.Int(conn.Do("llen", "prod:queue:manager1"))
 			c.Expect(len, Equals, 0)
-		})
-
-		c.Specify("drain queue completely on exit", func() {
-			sentinel, _ := NewMsg("{\"foo\":\"bar2\",\"args\":\"sentinel\"}")
-
-			drained := false
-
-			slowJob := (func(message *Msg) {
-				if message.ToJson() == sentinel.ToJson() {
-					drained = true
-				} else {
-					processed <- message.Args()
-				}
-
-				time.Sleep(1 * time.Second)
-			})
-			manager := newManager("manager1", slowJob, 10)
-
-			for i := 0; i < 9; i++ {
-				conn.Do("lpush", "prod:queue:manager1", message.ToJson())
-			}
-			conn.Do("lpush", "prod:queue:manager1", sentinel.ToJson())
-
-			manager.start()
-			for i := 0; i < 9; i++ {
-				<-processed
-			}
-			manager.quit()
-
-			len, _ := redis.Int(conn.Do("llen", "prod:queue:manager1"))
-			c.Expect(len, Equals, 0)
-			c.Expect(drained, Equals, true)
 		})
 
 		c.Specify("per-manager middlwares are called separately, global middleware is called in each manager", func() {

@@ -50,7 +50,7 @@ func Configure(options map[string]string) {
 			MaxIdle:     poolSize,
 			IdleTimeout: 240 * time.Second,
 			Dial: func() (redis.Conn, error) {
-				c, err := redis.Dial("tcp", options["server"])
+				c, err := redis.DialTimeout("tcp", options["server"], 5*time.Second, 5*time.Second, 5*time.Second)
 				if err != nil {
 					return nil, err
 				}
@@ -74,7 +74,7 @@ func Configure(options map[string]string) {
 			},
 		},
 		func(queue string) Fetcher {
-			return NewFetch(queue, make(chan *Msg), make(chan bool))
+			return NewFetch(queue, make(chan Msgs), make(chan bool))
 		},
 	}
 }

@@ -2,6 +2,7 @@ package workers
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/garyburd/redigo/redis"
@@ -11,26 +12,29 @@ type scheduled struct {
 	keys   []string
 	closed chan bool
 	exit   chan bool
+	wg     sync.WaitGroup
 }
 
 func (s *scheduled) start() {
+	s.wg.Add(1)
 	go (func() {
+		defer s.wg.Done()
 		for {
+			s.poll()
+
 			select {
 			case <-s.closed:
 				return
-			default:
+			case <-time.After(time.Duration(Config.PollInterval) * time.Second):
 			}
 
-			s.poll()
-
-			time.Sleep(time.Duration(Config.PollInterval) * time.Second)
 		}
 	})()
 }
 
 func (s *scheduled) quit() {
 	close(s.closed)
+	s.wg.Wait()
 }
 
 func (s *scheduled) poll() {
@@ -47,12 +51,11 @@ func (s *scheduled) poll() {
 				break
 			}
 
-			message, _ := NewMsg(messages[0])
+			message, _ := NewMsgFromString(messages[0])
 
 			if removed, _ := redis.Bool(conn.Do("zrem", key, messages[0])); removed {
-				queue, _ := message.Get("queue").String()
-				queue = strings.TrimPrefix(queue, Config.Namespace)
-				message.Set("enqueued_at", nowToSecondsWithNanoPrecision())
+				queue := strings.TrimPrefix(message.queue, Config.Namespace)
+				message.enqueuedAt = nowToSecondsWithNanoPrecision()
 				conn.Do("lpush", Config.Namespace+"queue:"+queue, message.ToJson())
 			}
 		}
@@ -62,5 +65,9 @@ func (s *scheduled) poll() {
 }
 
 func newScheduled(keys ...string) *scheduled {
-	return &scheduled{keys, make(chan bool), make(chan bool)}
+	return &scheduled{
+		keys:   keys,
+		closed: make(chan bool),
+		exit:   make(chan bool),
+	}
 }
